@@ -6,8 +6,6 @@
 #include <list>
 #include <windows.h> // console control
 #include "Vector2.h"
-#include <exception> // handle exception
-#include <cstdlib>
 #include <random> // random number generater
 #include <cstring> // std::memset
 #include <mutex> // thread lock
@@ -66,11 +64,13 @@ std::mutex outputMtx;
 // ---------- Game ----------
 std::list<Vector2Int> snake;
 Tile map[mapsize.x][mapsize.y];
-constexpr float startSpeed = 1.5, speedIncrease = 0.1;
-float speed, moveCountDown;
+constexpr float startSpeed = 1.5, speedIncrease = 0.1, restartCountDownTime = 5;
+float speed, moveCountDown, restartCountDown;
 byte toGrow, score, hiScore;
 Input currentDir, inputDir;
 std::list<void(*)(Input)> inputEvents;
+Vector2Int restartCountDownDisplayPos;
+bool restartReady;
 
 // random number generater
 std::random_device rd;
@@ -78,6 +78,7 @@ std::mt19937 gen(rd());
 
 // ---------- Render ----------
 HANDLE consoleHandle;
+CONSOLE_SCREEN_BUFFER_INFO csbi;
 CONSOLE_CURSOR_INFO cursorInfo;
 Vector2Int mapPos{ 1,1 };
 Vector2Int msgPos{ mapsize.x + 2,0 };
@@ -132,9 +133,14 @@ void ChangeState(State to)
             // replace "#" to "X" to indicate snake is dead
             MapReplace(Tile::snake, 'X');
 
-            inputEvents.push_front(GameStart);
+            PrintMessage(2, "Game over, new game available in ");
 
-            PrintMessage(2,"Game over, Press any direction key to restart...");
+            GetConsoleScreenBufferInfo(consoleHandle, &csbi);
+            restartCountDownDisplayPos.x = csbi.dwCursorPosition.X;
+            restartCountDownDisplayPos.y = csbi.dwCursorPosition.Y;
+
+            restartCountDown = restartCountDownTime;
+            restartReady = false;
             break;
     }
 }
@@ -142,7 +148,6 @@ void ChangeState(State to)
 int main()
 {
     running = true;
-    CONSOLE_SCREEN_BUFFER_INFO csbi;
     consoleHandle = GetStdHandle(STD_OUTPUT_HANDLE);
 
     // no buffer
@@ -172,10 +177,9 @@ int main()
 
     // clock
     time_point lastTime = steady_clock::now();
-    double elapsed = 0, runtime;
+    double elapsed = 0, runtime; // milliseconds
 
-    int length = (mapsize.x + 1) * mapsize.y;
-    char c[length];
+    char c[4];
     while (running)
     {
         elapsed = duration_cast<milliseconds>(steady_clock::now() - lastTime).count();
@@ -205,6 +209,23 @@ int main()
             {
                 moveCountDown += 1;
                 MoveSnake(currentDir);
+            }
+        }
+
+        else if (currentState == State::stopped && !restartReady)
+        {
+            restartCountDown -= elapsed / 1000;
+
+            if (restartCountDown < 0)
+            {
+                PrintMessage(2, "Game over, Press any direction key to restart...");
+                inputEvents.push_front(GameStart);
+                restartReady = true;
+            }
+            else
+            {
+                std::snprintf(c, sizeof(c), "%.1f", restartCountDown);
+                PrintAt(restartCountDownDisplayPos, c);
             }
         }
         // -------------------------------
@@ -439,7 +460,7 @@ void MapReplace(Tile tile, char ch)
                 *(c + length) = ch;
                 length++;
             }
-            else
+            else if (*c != 0)
             {
                 PrintAt(Vector2Int(x + mapPos.x - length, y + mapPos.y), c);
                 std::memset(c, 0, sizeof(c)); // fill c with \0
@@ -450,7 +471,7 @@ void MapReplace(Tile tile, char ch)
         // clear c before next line
         if (length != 0)
         {
-            PrintAt(Vector2Int(mapsize.x - 1 + mapPos.x - length, y + mapPos.y), c);
+            PrintAt(Vector2Int(mapsize.x + mapPos.x - length, y + mapPos.y), c);
             std::memset(c, 0, sizeof(c));
             length = 0;
         }
@@ -517,7 +538,7 @@ void InvokeInputEvent(Input input)
 
 void RemoveInputEvent(void(*rm)(Input))
 {
-    inputEvents.remove_if([rm](auto& f) {return f == rm;});
+    inputEvents.remove_if([rm](auto& f) { return f == rm; });
 }
 #pragma endregion
 
